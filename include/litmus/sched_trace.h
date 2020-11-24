@@ -24,7 +24,8 @@ struct st_param_data {		/* regular params */
 	u32	phase;
 	u8	partition;
 	u8	class;
-	u8	__unused[2];
+	u8	level;
+	u8	__unused[1];
 };
 
 struct st_release_data {	/* A job is was/is going to be released. */
@@ -71,8 +72,8 @@ struct st_resume_data {		/* A task resumes. */
 
 struct st_action_data {
 	u64	when;
-	u8	action;
-	u8	__unused[7];
+	u32	action;
+	u8	__unused[4];
 };
 
 struct st_sys_release_data {
@@ -191,6 +192,12 @@ feather_callback void do_sched_trace_sys_release(unsigned long id,
 /* when is a pointer, it does not need an explicit cast to unsigned long */
 #define sched_trace_sys_release(when) \
 	SCHED_TRACE(SCHED_TRACE_BASE_ID + 10, do_sched_trace_sys_release, when)
+
+
+#define QT_START lt_t _qt_start = litmus_clock()
+#define QT_END \
+	sched_trace_log_message("%d P%d      [%s@%s:%d]: Took %llu\n\n", \
+		TRACE_ARGS, litmus_clock() - _qt_start)
 
 
 #define sched_trace_quantum_boundary() /* NOT IMPLEMENTED */

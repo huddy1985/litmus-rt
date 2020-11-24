@@ -1053,6 +1053,7 @@ void hrtimer_start_on_info_init(struct hrtimer_start_on_info *info)
 {
 	memset(info, 0, sizeof(struct hrtimer_start_on_info));
 	atomic_set(&info->state, HRTIMER_START_ON_INACTIVE);
+	INIT_LIST_HEAD(&info->list);
 }
 
 /**
@@ -1071,9 +1072,29 @@ void hrtimer_pull(void)
 	list_for_each_safe(pos, safe, &list) {
 		info = list_entry(pos, struct hrtimer_start_on_info, list);
 		TRACE("pulled timer 0x%x\n", info->timer);
-		list_del(pos);
-		hrtimer_start(info->timer, info->time, info->mode);
+		list_del_init(pos);
+		if (!info->timer) continue;
+		if (atomic_read(&info->state) != HRTIMER_START_ON_INACTIVE)
+			hrtimer_start(info->timer, info->time, info->mode);
+		if (atomic_read(&info->state) == HRTIMER_START_ON_INACTIVE)
+			hrtimer_cancel(info->timer);
 	}
+}
+
+/**
+ * hrtimer_pull_cancel - Cancel a remote timer pull
+ */
+int hrtimer_pull_cancel(int cpu, struct hrtimer *timer,
+			struct hrtimer_start_on_info *info)
+{
+	struct hrtimer_cpu_base *base = &per_cpu(hrtimer_bases, cpu);
+
+	raw_spin_lock(&base->lock);
+	list_del_init(&info->list);
+	raw_spin_unlock(&base->lock);
+
+	atomic_set(&info->state, HRTIMER_START_ON_INACTIVE);
+	return hrtimer_try_to_cancel(timer);
 }
 
 /**
@@ -1085,8 +1106,8 @@ void hrtimer_pull(void)
  *  @mode:	timer mode
  */
 int hrtimer_start_on(int cpu, struct hrtimer_start_on_info* info,
-		struct hrtimer *timer, ktime_t time,
-		const enum hrtimer_mode mode)
+		     struct hrtimer *timer, ktime_t time,
+		     const enum hrtimer_mode mode)
 {
 	unsigned long flags;
 	struct hrtimer_cpu_base* base;
@@ -1118,7 +1139,8 @@ int hrtimer_start_on(int cpu, struct hrtimer_start_on_info* info,
 			__hrtimer_start_range_ns(info->timer, info->time,
 						 0, info->mode, 0);
 		} else {
-			TRACE("hrtimer_start_on: pulling to remote CPU\n");
+			TRACE("hrtimer_start_on: pulling 0x%x to remote CPU\n",
+			      info->timer);
 			base = &per_cpu(hrtimer_bases, cpu);
 			raw_spin_lock_irqsave(&base->lock, flags);
 			was_empty = list_empty(&base->to_pull);

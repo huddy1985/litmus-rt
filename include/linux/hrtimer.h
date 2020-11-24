@@ -378,6 +378,8 @@ extern void hrtimer_start_on_info_init(struct hrtimer_start_on_info *info);
 extern int hrtimer_start_on(int cpu, struct hrtimer_start_on_info *info,
 			struct hrtimer *timer, ktime_t time,
 			const enum hrtimer_mode mode);
+extern int hrtimer_pull_cancel(int cpu, struct hrtimer *timer,
+			       struct hrtimer_start_on_info *info);
 #endif
 
 extern int hrtimer_cancel(struct hrtimer *timer);

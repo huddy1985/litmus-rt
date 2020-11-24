@@ -6,6 +6,8 @@
 #define __UNC_RT_DOMAIN_H__
 
 #include <litmus/bheap.h>
+#include <litmus/domain.h>
+#include <litmus/event_group.h>
 
 #define RELEASE_QUEUE_SLOTS 127 /* prime */
 
@@ -29,7 +31,10 @@ typedef struct _rt_domain {
 	raw_spinlock_t 			release_lock;
 	struct release_queue 		release_queue;
 
-#ifdef CONFIG_RELEASE_MASTER
+#if defined(CONFIG_MERGE_TIMERS)
+	struct event_group*		event_group;
+	int				prio;
+#elif defined(CONFIG_RELEASE_MASTER)
 	int				release_master;
 #endif
 
@@ -53,12 +58,17 @@ struct release_heap {
 	lt_t				release_time;
 	/* all tasks to be released at release_time */
 	struct bheap			heap;
+
+#ifdef CONFIG_MERGE_TIMERS
+	/* used to merge timer calls */
+	struct rt_event			event;
+#else
 	/* used to trigger the release */
 	struct hrtimer			timer;
-
 #ifdef CONFIG_RELEASE_MASTER
 	/* used to delegate releases */
 	struct hrtimer_start_on_info	info;
+#endif
 #endif
 	/* required for the timer callback */
 	rt_domain_t*			dom;
@@ -76,7 +86,15 @@ static inline struct task_struct* __next_ready(rt_domain_t* rt)
 
 void rt_domain_init(rt_domain_t *rt, bheap_prio_t order,
 		    check_resched_needed_t check,
-		    release_jobs_t relase);
+		    release_jobs_t release);
+
+void pd_domain_init(domain_t *dom,
+		    rt_domain_t *rt,
+		    bheap_prio_t order,
+		    check_resched_needed_t check,
+		    release_jobs_t release,
+		    preempt_needed_t preempt_needed,
+		    task_prio_t priority);
 
 void __add_ready(rt_domain_t* rt, struct task_struct *new);
 void __merge_ready(rt_domain_t* rt, struct bheap *tasks);

@@ -352,3 +352,4 @@ ENTRY(sys_call_table)
 	.long sys_wait_for_ts_release
 	.long sys_release_ts
 	.long sys_null_call
+	.long sys_set_rt_task_mc_param

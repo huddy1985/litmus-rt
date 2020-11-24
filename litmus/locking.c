@@ -1,3 +1,5 @@
+#include <linux/sched.h>
+#include <litmus/litmus.h>
 #include <litmus/fdso.h>
 
 #ifdef CONFIG_LITMUS_LOCKING
@@ -69,6 +71,10 @@ asmlinkage long sys_litmus_lock(int lock_od)
 	struct od_table_entry* entry;
 	struct litmus_lock* l;
 
+	TS_SYSCALL_IN_START;
+
+	TS_SYSCALL_IN_END;
+
 	TS_LOCK_START;
 
 	entry = get_entry_for_od(lock_od);
@@ -80,7 +86,9 @@ asmlinkage long sys_litmus_lock(int lock_od)
 
 	/* Note: task my have been suspended or preempted in between!  Take
 	 * this into account when computing overheads. */
-	TS_UNLOCK_END;
+	TS_LOCK_END;
+
+	TS_SYSCALL_OUT_START;
 
 	return err;
 }
@@ -90,6 +98,10 @@ asmlinkage long sys_litmus_unlock(int lock_od)
 	long err = -EINVAL;
 	struct od_table_entry* entry;
 	struct litmus_lock* l;
+
+	TS_SYSCALL_IN_START;
+
+	TS_SYSCALL_IN_END;
 
 	TS_UNLOCK_START;
 
@@ -104,21 +116,21 @@ asmlinkage long sys_litmus_unlock(int lock_od)
 	 * account when computing overheads. */
 	TS_UNLOCK_END;
 
+	TS_SYSCALL_OUT_START;
+
 	return err;
 }
 
-struct task_struct* __waitqueue_remove_first(wait_queue_head_t *wq)
+struct task_struct* waitqueue_first(wait_queue_head_t *wq)
 {
-	wait_queue_t* q;
-	struct task_struct* t = NULL;
+	wait_queue_t *q;
 
 	if (waitqueue_active(wq)) {
 		q = list_entry(wq->task_list.next,
 			       wait_queue_t, task_list);
-		t = (struct task_struct*) q->private;
-		__remove_wait_queue(wq, q);
-	}
-	return(t);
+		return (struct task_struct*) q->private;
+	} else
+		return NULL;
 }
 
 

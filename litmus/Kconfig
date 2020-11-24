@@ -23,16 +23,67 @@ config PLUGIN_PFAIR
 
 	  If unsure, say Yes.
 
+config MERGE_TIMERS
+       bool "Timer-merging Support"
+       depends on HIGH_RES_TIMERS
+       default y
+       help
+         Include support for merging timers.
+
+config MERGE_TIMERS_WINDOW
+       int "Timer-merging Window (in nanoseconds)"
+       depends on MERGE_TIMERS
+       default 1000
+       help
+         Window within which seperate timers may be merged.
+
 config RELEASE_MASTER
         bool "Release-master Support"
 	depends on ARCH_HAS_SEND_PULL_TIMERS
 	default n
 	help
-           Allow one processor to act as a dedicated interrupt processor
-           that services all timer interrupts, but that does not schedule
-           real-time tasks. See RTSS'09 paper for details
-	   (http://www.cs.unc.edu/~anderson/papers.html).
-           Currently only supported by GSN-EDF.
+          In GSN-EDF, allow one processor to act as a dedicated interrupt
+	  processor that services all timer interrupts, but that does not schedule
+          real-time tasks. See RTSS'09 paper for details
+	  (http://www.cs.unc.edu/~anderson/papers.html).
+
+menu "Mixed Criticality"
+
+config PLUGIN_MC
+       bool "Mixed Criticality Scheduler"
+       depends on X86 && SYSFS
+       default y
+       help
+         Include the mixed criticality scheduler. This plugin depends
+         on the global release-master processor for its _REDIRECT and
+         _RELEASE_MASTER options.
+
+         If unsure, say Yes.
+
+config PLUGIN_MC_LEVEL_A_MAX_TASKS
+       int "Maximum level A tasks"
+       depends on PLUGIN_MC
+       range 1 128
+       default 32
+       help
+         The maximum number of level A tasks allowed (per-cpu) in level A.
+
+config PLUGIN_MC_RELEASE_MASTER
+       bool "Release-master support for MC"
+       depends on PLUGIN_MC && RELEASE_MASTER
+       default y
+       help
+         Send all timer interrupts to the system-wide release-master CPU.
+
+config PLUGIN_MC_REDIRECT
+       bool "Redirect Work to Release-master"
+       depends on PLUGIN_MC && RELEASE_MASTER
+       default y
+       help
+         Allow processors to send work involving global state to the
+         release-master cpu in order to avoid excess overheads during
+         partitioned decisions.
+endmenu
 
 endmenu
 

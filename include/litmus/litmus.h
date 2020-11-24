@@ -26,7 +26,7 @@ static inline int in_list(struct list_head* list)
 		);
 }
 
-struct task_struct* __waitqueue_remove_first(wait_queue_head_t *wq);
+struct task_struct* waitqueue_first(wait_queue_head_t *wq);
 
 #define NO_CPU			0xffffffff
 
@@ -55,6 +55,7 @@ void litmus_exit_task(struct task_struct *tsk);
 #define get_deadline(t)		(tsk_rt(t)->job_params.deadline)
 #define get_release(t)		(tsk_rt(t)->job_params.release)
 #define get_class(t)		(tsk_rt(t)->task_params.cls)
+#define get_task_domain(t)	(tsk_rt(t)->_domain)
 
 #define is_priority_boosted(t)	(tsk_rt(t)->priority_boosted)
 #define get_boost_start(t)	(tsk_rt(t)->boost_start_time)
@@ -127,6 +128,16 @@ void srp_ceiling_block(void);
 #endif
 
 #define bheap2task(hn) ((struct task_struct*) hn->value)
+
+static inline struct control_page* get_control_page(struct task_struct *t)
+{
+	return tsk_rt(t)->ctrl_page;
+}
+
+static inline int has_control_page(struct task_struct* t)
+{
+	return tsk_rt(t)->ctrl_page != NULL;
+}
 
 #ifdef CONFIG_NP_SECTION
 
@@ -242,5 +253,9 @@ static inline quanta_t time2quanta(lt_t time, enum round round)
 
 /* By how much is cpu staggered behind CPU 0? */
 u64 cpu_stagger_offset(int cpu);
+
+#define TS_SYSCALL_IN_START						\
+	if (has_control_page(current))					\
+		__TS_SYSCALL_IN_START(&get_control_page(current)->ts_syscall_start);
 
 #endif

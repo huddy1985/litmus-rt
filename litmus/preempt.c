@@ -6,6 +6,8 @@
 /* The rescheduling state of each processor.
  */
 DEFINE_PER_CPU_SHARED_ALIGNED(atomic_t, resched_state);
+#define TRACE_TASK(t, fmt, args...)
+#define TRACE(fmt, args...)
 
 void sched_state_will_schedule(struct task_struct* tsk)
 {

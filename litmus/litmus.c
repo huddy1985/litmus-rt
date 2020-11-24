@@ -13,9 +13,18 @@
 #include <litmus/litmus.h>
 #include <litmus/bheap.h>
 #include <litmus/trace.h>
+#include <litmus/event_group.h>
 #include <litmus/rt_domain.h>
 #include <litmus/litmus_proc.h>
 #include <litmus/sched_trace.h>
+
+#ifdef CONFIG_PLUGIN_MC
+#include <linux/pid.h>
+#include <linux/hrtimer.h>
+#include <litmus/sched_mc.h>
+#else
+struct mc_task;
+#endif
 
 /* Number of RT tasks that exist in the system */
 atomic_t rt_task_count 		= ATOMIC_INIT(0);
@@ -31,8 +40,16 @@ atomic_t __log_seq_no = ATOMIC_INIT(0);
 atomic_t release_master_cpu = ATOMIC_INIT(NO_CPU);
 #endif
 
-static struct kmem_cache * bheap_node_cache;
-extern struct kmem_cache * release_heap_cache;
+static struct kmem_cache *bheap_node_cache;
+extern struct kmem_cache *release_heap_cache;
+
+#ifdef CONFIG_MERGE_TIMERS
+extern struct kmem_cache *event_list_cache;
+#endif
+
+#ifdef CONFIG_PLUGIN_MC
+static struct kmem_cache *mc_data_cache;
+#endif
 
 struct bheap_node* bheap_node_alloc(int gfp_flags)
 {
@@ -274,6 +291,79 @@ asmlinkage long sys_null_call(cycles_t __user *ts)
 	return ret;
 }
 
+#ifdef CONFIG_PLUGIN_MC
+asmlinkage long sys_set_rt_task_mc_param(pid_t pid, struct mc_task __user *param)
+{
+	struct mc_task mc;
+	struct mc_data *mc_data;
+	struct task_struct *target;
+	int retval = -EINVAL;
+
+	printk("Setting up mixed-criticality task parameters for process %d.\n",
+		pid);
+
+	if (pid < 0 || param == 0) {
+		goto out;
+	}
+	if (copy_from_user(&mc, param, sizeof(mc))) {
+		retval = -EFAULT;
+		goto out;
+	}
+
+	/* Task search and manipulation must be protected */
+	read_lock_irq(&tasklist_lock);
+	if (!(target = find_task_by_vpid(pid))) {
+		retval = -ESRCH;
+		goto out_unlock;
+	}
+
+	if (is_realtime(target)) {
+		/* The task is already a real-time task.
+		 * We cannot not allow parameter changes at this point.
+		 */
+		retval = -EBUSY;
+		goto out_unlock;
+	}
+
+	/* check parameters passed in are valid */
+	if (mc.crit < CRIT_LEVEL_A || mc.crit >= NUM_CRIT_LEVELS) {
+		printk(KERN_WARNING "litmus: real-time task %d rejected because "
+			"of invalid criticality level\n", pid);
+		goto out_unlock;
+	}
+	if (CRIT_LEVEL_A == mc.crit &&
+			(mc.lvl_a_id < 0 ||
+			 mc.lvl_a_id >= CONFIG_PLUGIN_MC_LEVEL_A_MAX_TASKS)) {
+		printk(KERN_WARNING "litmus: real-time task %d rejected because "
+			"of invalid level A id\n", pid);
+		goto out_unlock;
+	}
+
+	mc_data = tsk_rt(target)->mc_data;
+	if (!mc_data) {
+		mc_data = kmem_cache_alloc(mc_data_cache, GFP_ATOMIC);
+		if (!mc_data) {
+			retval = -ENOMEM;
+			goto out_unlock;
+		}
+		tsk_rt(target)->mc_data = mc_data;
+	}
+	mc_data->mc_task = mc;
+
+	retval = 0;
+out_unlock:
+	read_unlock_irq(&tasklist_lock);
+out:
+	return retval;
+}
+#else
+asmlinkage long sys_set_rt_task_mc_param(pid_t pid, struct mc_task __user *param)
+{
+	/* don't allow this syscall if the plugin is not enabled */
+	return -EINVAL;
+}
+#endif
+
 /* p is a real-time task. Re-init its state as a best-effort task. */
 static void reinit_litmus_state(struct task_struct* p, int restore)
 {
@@ -479,6 +569,15 @@ void exit_litmus(struct task_struct *dead_tsk)
 		free_page((unsigned long) tsk_rt(dead_tsk)->ctrl_page);
 	}
 
+#ifdef CONFIG_PLUGIN_MC
+        /* The MC-setup syscall might succeed and allocate mc_data, but the
+	 * task may not exit in real-time mode, and that memory will leak.
+	 *  Check and free it here.
+	 */
+	if (tsk_rt(dead_tsk)->mc_data)
+		kmem_cache_free(mc_data_cache, tsk_rt(dead_tsk)->mc_data);
+#endif
+
 	/* main cleanup only for RT tasks */
 	if (is_realtime(dead_tsk))
 		litmus_exit_task(dead_tsk);
@@ -519,8 +618,14 @@ static int __init _init_litmus(void)
 
 	register_sched_plugin(&linux_sched_plugin);
 
-	bheap_node_cache    = KMEM_CACHE(bheap_node, SLAB_PANIC);
+	bheap_node_cache   = KMEM_CACHE(bheap_node, SLAB_PANIC);
 	release_heap_cache = KMEM_CACHE(release_heap, SLAB_PANIC);
+#ifdef CONFIG_MERGE_TIMERS
+	event_list_cache   = KMEM_CACHE(event_list, SLAB_PANIC);
+#endif
+#ifdef CONFIG_PLUGIN_MC
+	mc_data_cache      = KMEM_CACHE(mc_data, SLAB_PANIC);
+#endif
 
 #ifdef CONFIG_MAGIC_SYSRQ
 	/* offer some debugging help */
@@ -540,6 +645,12 @@ static void _exit_litmus(void)
 	exit_litmus_proc();
 	kmem_cache_destroy(bheap_node_cache);
 	kmem_cache_destroy(release_heap_cache);
+#ifdef CONFIG_MERGE_TIMERS
+	kmem_cache_destroy(event_list_cache);
+#endif
+#ifdef CONFIG_PLUGIN_MC
+	kmem_cache_destroy(mc_data_cache);
+#endif
 }
 
 module_init(_init_litmus);

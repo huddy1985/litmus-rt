@@ -8,11 +8,13 @@
 
 #include <litmus/debug_trace.h>
 
+
 extern DEFINE_PER_CPU_SHARED_ALIGNED(atomic_t, resched_state);
 
 #ifdef CONFIG_DEBUG_KERNEL
 const char* sched_state_name(int s);
-#define TRACE_STATE(fmt, args...) TRACE("SCHED_STATE " fmt, args)
+//#define TRACE_STATE(fmt, args...) TRACE("SCHED_STATE " fmt, args)
+#define TRACE_STATE(fmt, args...) /* ignore */
 #else
 #define TRACE_STATE(fmt, args...) /* ignore */
 #endif

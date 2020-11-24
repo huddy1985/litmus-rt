@@ -14,7 +14,11 @@
 #include <litmus/sched_trace.h>
 #include <litmus/feather_trace.h>
 #include <litmus/ftdev.h>
+#include <litmus/rt_domain.h>
+#include <litmus/domain.h>
+#include <litmus/event_group.h>
 
+#include <litmus/sched_mc.h>
 
 #define NO_EVENTS		(1 << CONFIG_SCHED_TASK_TRACE_SHIFT)
 
@@ -132,6 +136,7 @@ feather_callback void do_sched_trace_task_param(unsigned long id, unsigned long 
 		rec->data.param.phase     = get_rt_phase(t);
 		rec->data.param.partition = get_partition(t);
 		rec->data.param.class     = get_class(t);
+		rec->data.param.level     = (tsk_mc_data(t) ? tsk_mc_crit(t) : -1);
 		put_record(rec);
 	}
 }
@@ -141,8 +146,8 @@ feather_callback void do_sched_trace_task_release(unsigned long id, unsigned lon
 	struct task_struct *t = (struct task_struct*) _task;
 	struct st_event_record* rec = get_record(ST_RELEASE, t);
 	if (rec) {
-		rec->data.release.release  = get_release(t);
-		rec->data.release.deadline = get_deadline(t);
+		rec->data.release.release  = tsk_rt(t)->job_params.real_release;
+		rec->data.release.deadline = tsk_rt(t)->job_params.real_deadline;
 		put_record(rec);
 	}
 }

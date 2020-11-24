@@ -3810,6 +3810,7 @@ need_resched:
 	release_kernel_lock(prev);
 need_resched_nonpreemptible:
 	TS_SCHED_START;
+	TS_LVLA_SCHED_START;
 	sched_trace_task_switch_away(prev);
 
 	schedule_debug(prev);
@@ -3859,6 +3860,7 @@ need_resched_nonpreemptible:
 		rq->curr = next;
 		++*switch_count;
 
+		TS_LVLA_SCHED_END(next);
 		TS_SCHED_END(next);
 		TS_CXS_START(next);
 		context_switch(rq, prev, next); /* unlocks the rq */

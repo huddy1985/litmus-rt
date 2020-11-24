@@ -17,5 +17,6 @@
 #define __NR_wait_for_ts_release __LSC(9)
 #define __NR_release_ts		__LSC(10)
 #define __NR_null_call		__LSC(11)
+#define __NR_set_rt_task_mc_param __LSC(12)
 
-#define NR_litmus_syscalls 12
+#define NR_litmus_syscalls 13

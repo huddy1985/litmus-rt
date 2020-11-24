@@ -10,8 +10,11 @@ void prepare_for_next_period(struct task_struct *t)
 {
 	BUG_ON(!t);
 	/* prepare next release */
+
 	t->rt_param.job_params.release   = t->rt_param.job_params.deadline;
+	t->rt_param.job_params.real_release =  t->rt_param.job_params.release;
 	t->rt_param.job_params.deadline += get_rt_period(t);
+	t->rt_param.job_params.real_deadline = t->rt_param.job_params.deadline;
 	t->rt_param.job_params.exec_time = 0;
 	/* update job sequence number */
 	t->rt_param.job_params.job_no++;

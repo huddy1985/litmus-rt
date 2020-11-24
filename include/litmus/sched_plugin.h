@@ -11,6 +11,8 @@
 #include <litmus/locking.h>
 #endif
 
+struct litmus_lock;
+
 /************************ setup/tear down ********************/
 
 typedef long (*activate_plugin_t) (void);

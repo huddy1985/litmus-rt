@@ -4,6 +4,8 @@
 
 #include <litmus/litmus.h>
 #include <litmus/preempt.h>
+#include <litmus/budget.h>
+#include <litmus/sched_trace.h>
 
 struct enforcement_timer {
 	/* The enforcement timer is used to accurately police
@@ -106,6 +108,24 @@ static int __init init_budget_enforcement(void)
 		et->timer.function = on_enforcement_timeout;
 	}
 	return 0;
+}
+
+void task_release(struct task_struct *t)
+{
+	t->rt_param.job_params.real_release = t->rt_param.job_params.real_deadline;
+	t->rt_param.job_params.real_deadline += get_rt_period(t);
+	t->rt_param.job_params.job_no++;
+	sched_trace_task_release(t);
+}
+
+void server_release(struct task_struct *t)
+{
+	lt_t now = litmus_clock();
+	t->rt_param.job_params.exec_time = 0;
+	t->rt_param.job_params.release = t->rt_param.job_params.deadline;
+	t->rt_param.job_params.deadline +=  get_rt_period(t);
+	/* don't confuse linux */
+	t->rt.time_slice = 1;
 }
 
 module_init(init_budget_enforcement);

@@ -5,6 +5,10 @@
 #include <litmus/litmus.h>
 #include <litmus/trace.h>
 
+#include <litmus/domain.h>
+#include <litmus/event_group.h>
+#include <litmus/sched_mc.h>
+
 /******************************************************************************/
 /*                          Allocation                                        */
 /******************************************************************************/
@@ -37,6 +41,36 @@ static inline void __save_timestamp(unsigned long event,
 	__save_timestamp_cpu(event, type, raw_smp_processor_id());
 }
 
+/* hack: fake timestamp to user-reported time, and record parts of the PID */
+feather_callback void save_timestamp_time(unsigned long event, unsigned long ptr)
+{
+	uint64_t* time = (uint64_t*) ptr;
+	unsigned int seq_no;
+	struct timestamp *ts;
+	seq_no = fetch_and_inc((int *) &ts_seq_no);
+	if (ft_buffer_start_write(trace_ts_buf, (void**)  &ts)) {
+		ts->event     = event;
+		ts->timestamp = *time;
+		ts->seq_no    = seq_no;
+		/* type takes lowest byte of PID */
+		ts->task_type = (uint8_t) current->pid;
+		/* cpu takes second-lowest byte of PID*/
+		ts->cpu       = (uint8_t) (current->pid >> 8);
+
+		ft_buffer_finish_write(trace_ts_buf, ts);
+	}
+}
+
+feather_callback void save_timestamp_pid(unsigned long event)
+{
+	/* Abuse existing fields to partially export PID. */
+	__save_timestamp_cpu(event,
+			     /* type takes lowest byte of PID */
+			     (uint8_t) current->pid,
+			     /* cpu takes second-lowest byte of PID*/
+			     (uint8_t) (current->pid >> 8));
+}
+
 feather_callback void save_timestamp(unsigned long event)
 {
 	__save_timestamp(event, TSK_UNKNOWN);
@@ -51,8 +85,15 @@ feather_callback void save_timestamp_def(unsigned long event,
 feather_callback void save_timestamp_task(unsigned long event,
 					  unsigned long t_ptr)
 {
-	int rt = is_realtime((struct task_struct *) t_ptr);
-	__save_timestamp(event, rt ? TSK_RT : TSK_BE);
+	struct task_struct *ts = (struct task_struct*) t_ptr;
+	int rt = is_realtime(ts);
+	uint8_t type = rt ? TSK_RT : TSK_BE;
+
+	if (TS_LVLA_SCHED_END_ID == event) {
+		if (rt && CRIT_LEVEL_A == tsk_mc_crit(ts))
+			type = TSK_LVLA;
+	}
+	__save_timestamp(event, type);
 }
 
 feather_callback void save_timestamp_cpu(unsigned long event,

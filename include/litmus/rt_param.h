@@ -63,6 +63,9 @@ struct control_page {
 	 * its non-preemptive section? */
 	int delayed_preemption;
 
+	/* locking overhead tracing: time stamp prior to system call */
+	uint64_t ts_syscall_start; /* Feather-Trace cycles */
+
 	/* to be extended */
 };
 
@@ -72,12 +75,16 @@ struct control_page {
 struct _rt_domain;
 struct bheap_node;
 struct release_heap;
+struct domain;
 
 struct rt_job {
 	/* Time instant the the job was or will be released.  */
 	lt_t	release;
 	/* What is the current deadline? */
 	lt_t   	deadline;
+
+	lt_t	real_release;
+	lt_t	real_deadline;
 
 	/* How much service has this job received so far? */
 	lt_t	exec_time;
@@ -93,6 +100,9 @@ struct rt_job {
 };
 
 struct pfair_param;
+#ifdef CONFIG_PLUGIN_MC
+struct mc_data;
+#endif
 
 /*	RT task parameters for scheduling extensions
  *	These parameters are inherited during clone and therefore must
@@ -113,6 +123,14 @@ struct rt_param {
 	unsigned int		priority_boosted:1;
 	/* If so, when did this start? */
 	lt_t			boost_start_time;
+#endif
+
+#ifdef CONFIG_PLUGIN_MC
+	/* mixed criticality specific data */
+	struct mc_data *mc_data;
+#endif
+#ifdef CONFIG_MERGE_TIMERS
+	struct rt_event *event;
 #endif
 
 	/* user controlled parameters */
@@ -168,6 +186,9 @@ struct rt_param {
 	 */
 	int old_policy;
 	int old_prio;
+
+	/* TODO: rename */
+	struct domain *_domain;
 
 	/* ready queue for this task */
 	struct _rt_domain* domain;

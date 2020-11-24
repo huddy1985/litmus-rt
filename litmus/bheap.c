@@ -248,13 +248,14 @@ int bheap_decrease(bheap_prio_t higher_prio, struct bheap_node* node)
 void bheap_delete(bheap_prio_t higher_prio, struct bheap* heap,
 		 struct bheap_node* node)
 {
-	struct bheap_node *parent, *prev, *pos;
+	struct bheap_node *parent, *prev, *pos, *old;
 	struct bheap_node** tmp_ref;
 	void* tmp;
 
 	if (heap->min != node) {
 		/* bubble up */
 		parent = node->parent;
+		old = node;
 		while (parent) {
 			/* swap parent and node */
 			tmp           = parent->value;

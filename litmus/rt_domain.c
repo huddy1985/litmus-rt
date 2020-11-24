@@ -12,13 +12,11 @@
 #include <linux/slab.h>
 
 #include <litmus/litmus.h>
+#include <litmus/event_group.h>
 #include <litmus/sched_plugin.h>
 #include <litmus/sched_trace.h>
-
 #include <litmus/rt_domain.h>
-
 #include <litmus/trace.h>
-
 #include <litmus/bheap.h>
 
 /* Uncomment when debugging timer races... */
@@ -51,34 +49,36 @@ static unsigned int time2slot(lt_t time)
 	return (unsigned int) time2quanta(time, FLOOR) % RELEASE_QUEUE_SLOTS;
 }
 
-static enum hrtimer_restart on_release_timer(struct hrtimer *timer)
+static void do_release(struct release_heap *rh)
 {
 	unsigned long flags;
-	struct release_heap* rh;
-
-	VTRACE("on_release_timer(0x%p) starts.\n", timer);
-
 	TS_RELEASE_START;
-
-	rh = container_of(timer, struct release_heap, timer);
 
 	raw_spin_lock_irqsave(&rh->dom->release_lock, flags);
 	VTRACE("CB has the release_lock 0x%p\n", &rh->dom->release_lock);
 	/* remove from release queue */
-	list_del(&rh->list);
+	list_del_init(&rh->list);
 	raw_spin_unlock_irqrestore(&rh->dom->release_lock, flags);
 	VTRACE("CB returned release_lock 0x%p\n", &rh->dom->release_lock);
 
 	/* call release callback */
 	rh->dom->release_jobs(rh->dom, &rh->heap);
-	/* WARNING: rh can be referenced from other CPUs from now on. */
 
 	TS_RELEASE_END;
-
-	VTRACE("on_release_timer(0x%p) ends.\n", timer);
-
-	return  HRTIMER_NORESTART;
 }
+
+#ifdef CONFIG_MERGE_TIMERS
+static void on_release(struct rt_event *e)
+{
+	do_release(container_of(e, struct release_heap, event));
+}
+#else
+static enum hrtimer_restart on_release(struct hrtimer *timer)
+{
+	do_release(container_of(timer, struct release_heap, timer));
+	return HRTIMER_NORESTART;
+}
+#endif
 
 /* allocated in litmus.c */
 struct kmem_cache * release_heap_cache;
@@ -86,19 +86,35 @@ struct kmem_cache * release_heap_cache;
 struct release_heap* release_heap_alloc(int gfp_flags)
 {
 	struct release_heap* rh;
-	rh= kmem_cache_alloc(release_heap_cache, gfp_flags);
+	rh = kmem_cache_alloc(release_heap_cache, gfp_flags);
 	if (rh) {
+#ifdef CONFIG_MERGE_TIMERS
+		init_event(&rh->event, 0, on_release,
+			   event_list_alloc(GFP_ATOMIC));
+#else
 		/* initialize timer */
 		hrtimer_init(&rh->timer, CLOCK_MONOTONIC, HRTIMER_MODE_ABS);
-		rh->timer.function = on_release_timer;
+		rh->timer.function = on_release;
+#endif
 	}
 	return rh;
 }
 
+#ifdef CONFIG_MERGE_TIMERS
+extern struct kmem_cache *event_list_cache;
+#endif
+
 void release_heap_free(struct release_heap* rh)
 {
 	/* make sure timer is no longer in use */
+#ifdef CONFIG_MERGE_TIMERS
+	if (rh->dom) {
+		cancel_event(&rh->event);
+		kmem_cache_free(event_list_cache, rh->event.event_list);
+	}
+#else
 	hrtimer_cancel(&rh->timer);
+#endif
 	kmem_cache_free(release_heap_cache, rh);
 }
 
@@ -147,13 +163,17 @@ static struct release_heap* get_release_heap(rt_domain_t *rt,
 	return heap;
 }
 
-static void reinit_release_heap(struct task_struct* t)
+static void reinit_release_heap(rt_domain_t *rt, struct task_struct* t)
 {
 	struct release_heap* rh;
 
 	/* use pre-allocated release heap */
 	rh = tsk_rt(t)->rel_heap;
 
+#ifdef CONFIG_MERGE_TIMERS
+	rh->event.prio = rt->prio;
+	cancel_event(&rh->event);
+#else
 	/* Make sure it is safe to use.  The timer callback could still
 	 * be executing on another CPU; hrtimer_cancel() will wait
 	 * until the timer callback has completed.  However, under no
@@ -165,13 +185,50 @@ static void reinit_release_heap(struct task_struct* t)
 	 */
 	BUG_ON(hrtimer_cancel(&rh->timer));
 
-	/* initialize */
-	bheap_init(&rh->heap);
 #ifdef CONFIG_RELEASE_MASTER
 	atomic_set(&rh->info.state, HRTIMER_START_ON_INACTIVE);
 #endif
+#endif
+	/* initialize */
+	bheap_init(&rh->heap);
+
 }
-/* arm_release_timer() - start local release timer or trigger
+
+#ifdef CONFIG_RELEASE_MASTER
+static void arm_release_timer_on(struct release_heap *rh, int target_cpu)
+#else
+static void arm_release_timer(struct release_heap *rh)
+#endif
+{
+#ifdef CONFIG_MERGE_TIMERS
+	add_event(rh->dom->event_group, &rh->event, rh->release_time);
+#else
+	VTRACE("arming timer 0x%p\n", &rh->timer);
+	/* we cannot arm the timer using hrtimer_start()
+	 * as it may deadlock on rq->lock
+	 * PINNED mode is ok on both local and remote CPU
+	 */
+
+#ifdef CONFIG_RELEASE_MASTER
+	if (rh->dom->release_master == NO_CPU && target_cpu == NO_CPU)
+#endif
+		__hrtimer_start_range_ns(&rh->timer,
+					 ns_to_ktime(rh->release_time),
+					 0, HRTIMER_MODE_ABS_PINNED, 0);
+#ifdef CONFIG_RELEASE_MASTER
+	else
+		hrtimer_start_on(/* target_cpu overrides release master */
+				 (target_cpu != NO_CPU ?
+				  target_cpu : rh->dom->release_master),
+				 &rh->info, &rh->timer,
+				 ns_to_ktime(rh->release_time),
+				 HRTIMER_MODE_ABS_PINNED);
+#endif
+#endif
+}
+
+
+/* setup_release() - start local release timer or trigger
  *     remote timer (pull timer)
  *
  * Called by add_release() with:
@@ -179,10 +236,10 @@ static void reinit_release_heap(struct task_struct* t)
  * - IRQ disabled
  */
 #ifdef CONFIG_RELEASE_MASTER
-#define arm_release_timer(t) arm_release_timer_on((t), NO_CPU)
-static void arm_release_timer_on(rt_domain_t *_rt , int target_cpu)
+#define setup_release(t) setup_release_on((t), NO_CPU)
+static void setup_release_on(rt_domain_t *_rt , int target_cpu)
 #else
-static void arm_release_timer(rt_domain_t *_rt)
+static void setup_release(rt_domain_t *_rt)
 #endif
 {
 	rt_domain_t *rt = _rt;
@@ -191,14 +248,13 @@ static void arm_release_timer(rt_domain_t *_rt)
 	struct task_struct* t;
 	struct release_heap* rh;
 
-	VTRACE("arm_release_timer() at %llu\n", litmus_clock());
+	VTRACE("setup_release() at %llu\n", litmus_clock());
 	list_replace_init(&rt->tobe_released, &list);
 
 	list_for_each_safe(pos, safe, &list) {
 		/* pick task of work list */
 		t = list_entry(pos, struct task_struct, rt_param.list);
-		sched_trace_task_release(t);
-		list_del(pos);
+		list_del_init(pos);
 
 		/* put into release heap while holding release_lock */
 		raw_spin_lock(&rt->release_lock);
@@ -211,7 +267,7 @@ static void arm_release_timer(rt_domain_t *_rt)
 			VTRACE_TASK(t, "Dropped release_lock 0x%p\n",
 				    &rt->release_lock);
 
-			reinit_release_heap(t);
+			reinit_release_heap(rt, t);
 			VTRACE_TASK(t, "release_heap ready\n");
 
 			raw_spin_lock(&rt->release_lock);
@@ -221,7 +277,7 @@ static void arm_release_timer(rt_domain_t *_rt)
 			rh = get_release_heap(rt, t, 1);
 		}
 		bheap_insert(rt->order, &rh->heap, tsk_rt(t)->heap_node);
-		VTRACE_TASK(t, "arm_release_timer(): added to release heap\n");
+		VTRACE_TASK(t, "setup_release(): added to release heap\n");
 
 		raw_spin_unlock(&rt->release_lock);
 		VTRACE_TASK(t, "Returned the release_lock 0x%p\n", &rt->release_lock);
@@ -231,39 +287,19 @@ static void arm_release_timer(rt_domain_t *_rt)
 		 * this release_heap anyway).
 		 */
 		if (rh == tsk_rt(t)->rel_heap) {
-			VTRACE_TASK(t, "arming timer 0x%p\n", &rh->timer);
-			/* we cannot arm the timer using hrtimer_start()
-			 * as it may deadlock on rq->lock
-			 *
-			 * PINNED mode is ok on both local and remote CPU
-			 */
 #ifdef CONFIG_RELEASE_MASTER
-			if (rt->release_master == NO_CPU &&
-			    target_cpu == NO_CPU)
+			arm_release_timer_on(rh, target_cpu);
+#else
+			arm_release_timer(rh);
 #endif
-				__hrtimer_start_range_ns(&rh->timer,
-						ns_to_ktime(rh->release_time),
-						0, HRTIMER_MODE_ABS_PINNED, 0);
-#ifdef CONFIG_RELEASE_MASTER
-			else
-				hrtimer_start_on(
-					/* target_cpu overrides release master */
-					(target_cpu != NO_CPU ?
-					 target_cpu : rt->release_master),
-					&rh->info, &rh->timer,
-					ns_to_ktime(rh->release_time),
-					HRTIMER_MODE_ABS_PINNED);
-#endif
-		} else
-			VTRACE_TASK(t, "0x%p is not my timer\n", &rh->timer);
+		}
 	}
 }
 
 void rt_domain_init(rt_domain_t *rt,
 		    bheap_prio_t order,
 		    check_resched_needed_t check,
-		    release_jobs_t release
-		   )
+		    release_jobs_t release)
 {
 	int i;
 
@@ -275,7 +311,7 @@ void rt_domain_init(rt_domain_t *rt,
 	if (!order)
 		order = dummy_order;
 
-#ifdef CONFIG_RELEASE_MASTER
+#if defined(CONFIG_RELEASE_MASTER) && !defined(CONFIG_MERGE_TIMERS)
 	rt->release_master = NO_CPU;
 #endif
 
@@ -298,12 +334,13 @@ void rt_domain_init(rt_domain_t *rt,
  */
 void __add_ready(rt_domain_t* rt, struct task_struct *new)
 {
-	TRACE("rt: adding %s/%d (%llu, %llu) rel=%llu to ready queue at %llu\n",
+	VTRACE("rt: adding %s/%d (%llu, %llu) rel=%llu to ready queue at %llu\n",
 	      new->comm, new->pid, get_exec_cost(new), get_rt_period(new),
 	      get_release(new), litmus_clock());
 
 	BUG_ON(bheap_node_in_heap(tsk_rt(new)->heap_node));
 
+	new->rt_param.domain = rt;
 	bheap_insert(rt->order, &rt->ready_queue, tsk_rt(new)->heap_node);
 	rt->check_resched(rt);
 }
@@ -322,7 +359,7 @@ void __merge_ready(rt_domain_t* rt, struct bheap* tasks)
 void __add_release_on(rt_domain_t* rt, struct task_struct *task,
 		      int target_cpu)
 {
-	TRACE_TASK(task, "add_release_on(), rel=%llu, target=%d\n",
+	VTRACE_TASK(task, "add_release_on(), rel=%llu, target=%d\n",
 		   get_release(task), target_cpu);
 	list_add(&tsk_rt(task)->list, &rt->tobe_released);
 	task->rt_param.domain = rt;
@@ -330,7 +367,7 @@ void __add_release_on(rt_domain_t* rt, struct task_struct *task,
 	/* start release timer */
 	TS_SCHED2_START(task);
 
-	arm_release_timer_on(rt, target_cpu);
+	setup_release_on(rt, target_cpu);
 
 	TS_SCHED2_END(task);
 }
@@ -341,15 +378,88 @@ void __add_release_on(rt_domain_t* rt, struct task_struct *task,
  */
 void __add_release(rt_domain_t* rt, struct task_struct *task)
 {
-	TRACE_TASK(task, "add_release(), rel=%llu\n", get_release(task));
+	VTRACE_TASK(task, "add_release(), rel=%llu\n", get_release(task));
 	list_add(&tsk_rt(task)->list, &rt->tobe_released);
 	task->rt_param.domain = rt;
 
 	/* start release timer */
 	TS_SCHED2_START(task);
 
-	arm_release_timer(rt);
+	setup_release(rt);
 
 	TS_SCHED2_END(task);
 }
 
+/******************************************************************************
+ * domain_t wrapper
+ ******************************************************************************/
+
+/* pd_requeue - calls underlying rt_domain add methods.
+ * If the task is not yet released, it is inserted into the rt_domain
+ * ready queue. Otherwise, it is queued for release.
+ *
+ * Assumes the caller already holds dom->lock.
+ */
+static void pd_requeue(domain_t *dom, struct task_struct *task)
+{
+	rt_domain_t *domain = (rt_domain_t*)dom->data;
+
+	TRACE_TASK(task, "Requeueing\n");
+	BUG_ON(!task || !is_realtime(task));
+	BUG_ON(is_queued(task));
+	BUG_ON(get_task_domain(task) != dom);
+
+	if (is_released(task, litmus_clock())) {
+		__add_ready(domain, task);
+		VTRACE("rt: adding %s/%d (%llu, %llu) rel=%llu to ready queue at %llu\n",
+		      task->comm, task->pid, get_exec_cost(task), get_rt_period(task),
+		      get_release(task), litmus_clock());
+	} else {
+		/* task has to wait for next release */
+		VTRACE_TASK(task, "add release(), rel=%llu\n", get_release(task));
+		add_release(domain, task);
+	}
+
+}
+
+/* pd_take_ready - removes and returns the next ready task from the rt_domain
+ *
+ * Assumes the caller already holds dom->lock.
+ */
+static struct task_struct* pd_take_ready(domain_t *dom)
+{
+	return __take_ready((rt_domain_t*)dom->data);
+ }
+
+/* pd_peek_ready - returns the head of the rt_domain ready queue
+ *
+ * Assumes the caller already holds dom->lock.
+ */
+static struct task_struct* pd_peek_ready(domain_t *dom)
+{
+	return  __next_ready((rt_domain_t*)dom->data);
+}
+
+static void pd_remove(domain_t *dom, struct task_struct *task)
+{
+	if (is_queued(task))
+		remove((rt_domain_t*)dom->data, task);
+}
+
+/* pd_domain_init - create a generic domain wrapper for an rt_domain
+ */
+void pd_domain_init(domain_t *dom,
+		    rt_domain_t *domain,
+		    bheap_prio_t order,
+		    check_resched_needed_t check,
+		    release_jobs_t release,
+		    preempt_needed_t preempt_needed,
+		    task_prio_t priority)
+{
+	rt_domain_init(domain, order, check, release);
+	domain_init(dom, &domain->ready_lock,
+		    pd_requeue, pd_peek_ready, pd_take_ready,
+		    preempt_needed, priority);
+	dom->remove = pd_remove;
+	dom->data = domain;
+}
