@@ -117,8 +117,15 @@ unsigned int mc_ce_get_expected_job(const int cpu, const int idx)
  */
 static inline lt_t get_cycle_offset(const lt_t when, const lt_t cycle_time)
 {
+	lt_t remaining = -1;
 	long long st = atomic64_read(&start_time);
-	lt_t offset = (when - st) % cycle_time;
+        long long w_s = when - st;
+        
+        while (remaining >= 0 && remaining <= cycle_time) {
+        	remaining = w_s - cycle_time;
+                w_s -= cycle_time;
+        }
+	lt_t offset = remaining;
 	TRACE("when: %llu  cycle_time: %llu start_time: %lld  offset %llu\n",
 			when, cycle_time, st, offset);
 	return offset;

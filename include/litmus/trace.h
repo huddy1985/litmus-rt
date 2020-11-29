@@ -31,6 +31,7 @@ feather_callback void save_timestamp_task(unsigned long event, unsigned long t_p
 feather_callback void save_timestamp_cpu(unsigned long event, unsigned long cpu);
 feather_callback void save_task_latency(unsigned long event, unsigned long when_ptr);
 feather_callback void save_timestamp_time(unsigned long event, unsigned long time_ptr);
+feather_callback void save_timestamp_pid(unsigned long event);
 
 #define TIMESTAMP(id) ft_event0(id, save_timestamp)
 
